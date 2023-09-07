@@ -1,5 +1,5 @@
 Steps:
-1) Parition the dataset to emulate different datasets of the respective number of organizations needed
+1) Partition the dataset to emulate different datasets of the respective number of organizations needed
 2) On the server side, initialize the global model parameters overriding flower framework's random client initialization
 3) Select a suitable number of clients to take part in the training
 4) Encrypt the grid data using various algorithms
