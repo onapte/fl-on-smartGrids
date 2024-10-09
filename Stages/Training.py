@@ -1,38 +1,58 @@
-# Input: The number of time steps T during one episode,
-# training episodes E.
-# Initialize RM , Q with random parameters θ .
-# Initialize Q′ with parameters θ′.
-# Initialize , increase and max .
-# Output: The defending strategy.
-# 1 for episode = 1 to E do
-# 2 for step t = 1 to T do
-# 3 Collect measurement vector yt ;
-# 4 Estimate the state of system ˆxt by Equation (3)
-# and Equation (4);
-# 5 Compute the observation ot by Equation (12);
-# 6 Compute the discrete observation value by
-# Equation (13);
-# 7  =  + increase;
-# 8 if  > max then
-# 9  = max ;
-# 10 end
-# 11 Generating a random number ra from (0, 1).
-# 12 if ra <  then
-# 13 at = a random action in action space.
-# 14 else
-# 15 at = argmaxQ(st , at , θ)
-# 16 end
-# 17 if st = sa then
-# 18 if at = as then
-# 19 rt = 0
-# 20 else
-# 21 rt = c1 ∗ |t − λ|
-# 22 end
-# 23 else
-# 24 if at = as then
-# 25 c2 ∗ ‖yt −h(ˆxt )‖
-# ‖w‖
-# 26 else
-# 27 rt = 0
-# 28 e
+import flwr as fl
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from util import get_data_loader
 
+# Train separately first to mitigate issues, if any, during the process
+class SimpleCNN(nn.Module):
+    def __init__(self):
+        super(SimpleCNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.fc1 = nn.Linear(64 * 7 * 7, 128)
+        self.fc2 = nn.Linear(128, 10)
+
+    def forward(self, x):
+        x = nn.functional.relu(self.conv1(x))
+        x = nn.functional.max_pool2d(x, kernel_size=2)
+        x = nn.functional.relu(self.conv2(x))
+        x = nn.functional.max_pool2d(x, kernel_size=2)
+        x = x.view(-1, 64 * 7 * 7)
+        x = nn.functional.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+class MyClient(fl.client.NumPyClient):
+    def __init__(self, model, train_loader):
+        self.model = model
+        self.train_loader = train_loader
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.01)
+
+    def get_parameters(self):
+        return [param.data.numpy() for param in self.model.parameters()]
+
+    def set_parameters(self, parameters):
+        for param, new_param in zip(self.model.parameters(), parameters):
+            param.data = torch.tensor(new_param)
+
+    def fit(self, parameters, config):
+        self.set_parameters(parameters)
+        self.model.train()
+        for epoch in range(config['epochs']):
+            for data, target in self.train_loader:
+                self.optimizer.zero_grad()
+                output = self.model(data)
+                loss = nn.CrossEntropyLoss()(output, target)
+                loss.backward()
+                self.optimizer.step()
+        return self.get_parameters(), len(self.train_loader.dataset), {}
+
+def train_model():
+    model = SimpleCNN()
+    train_loader = get_data_loader(batch_size=32)
+    client = MyClient(model, train_loader)
+    fl.client.start_numpy_client(server_address="localhost:8080", client=client)
+
+if __name__ == "__main__":
+    train_model()
