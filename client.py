@@ -1,66 +1,52 @@
 import flwr as fl
-import tensorflow as tf
-from tensorflow import keras
-import sys
-import seaborn as sns
-import matplotlib.pyplot as plt
-import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
 
-# AUxillary methods
-def getDist(y):
-    ax = sns.countplot(y)
-    ax.set(title="Count of data classes")
-    plt.show()
+class Client(fl.client.Client):
+    def __init__(self, model, train_loader):
+        self.model = model
+        self.train_loader = train_loader
 
-def getData(dist, x, y):
-    dx = []
-    dy = []
-    counts = [0 for i in range(10)]
-    for i in range(len(x)):
-        if counts[y[i]]<dist[y[i]]:
-            dx.append(x[i])
-            dy.append(y[i])
-            counts[y[i]] += 1
-        
-    return np.array(dx), np.array(dy)
-
-# Load and compile Keras model
-model = keras.Sequential([
-    keras.layers.Flatten(input_shape=(28,28)),
-    keras.layers.Dense(128, activation='relu'),
-    keras.layers.Dense(256, activation='relu'),
-    keras.layers.Dense(10, activation='softmax')
-])
-model.compile("adam", "sparse_categorical_crossentropy", metrics=["accuracy"])
-
-# Load dataset
-(x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
-x_train, x_test = x_train[..., np.newaxis]/255.0, x_test[..., np.newaxis]/255.0
-dist = [4000, 4000, 4000, 3000, 10, 10, 10, 10, 4000, 10]
-x_train, y_train = getData(dist, x_train, y_train)
-getDist(y_train)
-
-# Define Flower client
-class FlowerClient(fl.client.NumPyClient):
     def get_parameters(self):
-        return model.get_weights()
+        return [param.data.numpy() for param in self.model.parameters()]
+
+    def set_parameters(self, parameters):
+        for param, new_param in zip(self.model.parameters(), parameters):
+            param.data = torch.tensor(new_param)
 
     def fit(self, parameters, config):
-        model.set_weights(parameters)
-        r = model.fit(x_train, y_train, epochs=1, validation_data=(x_test, y_test), verbose=0)
-        hist = r.history
-        print("Fit history : " ,hist)
-        return model.get_weights(), len(x_train), {}
+        self.set_parameters(parameters)
+        self.model.train()
+        optimizer = optim.SGD(self.model.parameters(), lr=0.01)
+        for epoch in range(config['epochs']):
+            for data, target in self.train_loader:
+                optimizer.zero_grad()
+                output = self.model(data)
+                loss = nn.CrossEntropyLoss()(output, target)
+                loss.backward()
+                optimizer.step()
+        return self.get_parameters(), len(self.train_loader.dataset), {}
 
     def evaluate(self, parameters, config):
-        model.set_weights(parameters)
-        loss, accuracy = model.evaluate(x_test, y_test, verbose=0)
-        print("Eval accuracy : ", accuracy)
-        return loss, len(x_test), {"accuracy": accuracy}
+        self.set_parameters(parameters)
+        self.model.eval()
+        test_loss = 0
+        correct = 0
+        with torch.no_grad():
+            for data, target in self.train_loader:
+                output = self.model(data)
+                test_loss += nn.CrossEntropyLoss()(output, target).item()
+                pred = output.argmax(dim=1, keepdim=True)
+                correct += pred.eq(target.view_as(pred)).sum().item()
+        return float(test_loss), len(self.train_loader.dataset), {"accuracy": correct / len(self.train_loader.dataset)}
 
-# Start Flower client
-fl.client.start_numpy_client(
-        server_address="localhost:"+str(sys.argv[1]), 
-        client=FlowerClient(), 
-        grpc_max_message_length = 1024*1024*1024
-)
+def main():
+    model = ...
+    train_loader = ...
+    client = Client(model, train_loader)
+    fl.client.start_numpy_client(server_address="localhost:8080", client=client)
+
+if __name__ == "__main__":
+    main()
